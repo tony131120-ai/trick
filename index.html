@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#111827">
+<link rel="manifest" href="manifest.json">
+<title>기침 이동</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0f172a;color:#fff;margin:0;padding:24px}
+main{max-width:520px;margin:auto}
+.card{background:#1e293b;border-radius:20px;padding:22px;margin-top:20px}
+input,button{box-sizing:border-box;width:100%;padding:14px;border-radius:12px;border:0;margin-top:10px;font-size:16px}
+button{background:#22c55e;color:#052e16;font-weight:700}
+button.stop{background:#ef4444;color:#fff}
+.status{margin-top:16px;padding:12px;border-radius:12px;background:#334155}
+small{color:#cbd5e1}
+</style>
+</head>
+<body>
+<main>
+<h1>🤧 기침 이동</h1>
+<small>기침이 감지되면 지정한 사이트로 이동합니다.</small>
+
+<div class="card">
+<label>이동할 사이트</label>
+<input id="url" type="url" placeholder="https://example.com">
+<button id="save">목적지 저장</button>
+<label style="display:block;margin-top:18px">기침 감도: <b id="sensText">50</b></label>
+<input id="sensitivity" type="range" min="1" max="100" value="50" style="margin-top:8px">
+<small>낮을수록 작은 소리에도 민감하게 반응합니다.</small>
+<button id="start">🎤 감지 시작</button>
+<button id="stop" class="stop" disabled>감지 중지</button>
+<div id="status" class="status">대기 중</div>
+</div>
+</main>
+
+<script>
+const urlEl=document.getElementById('url');
+const statusEl=document.getElementById('status');
+let audioContext, analyser, stream, timer;
+let lastTrigger=0;
+let samples=[];
+let sensitivity=50;
+const COOLDOWN=5000;
+
+function setStatus(t){statusEl.textContent=t;}
+
+function validUrl(v){
+  try{
+    const u=new URL(v);
+    return u.protocol==='http:'||u.protocol==='https:';
+  }catch{return false;}
+}
+
+document.addEventListener('DOMContentLoaded',()=>{
+  urlEl.value=localStorage.getItem('targetUrl')||'';
+  sensitivity=Number(localStorage.getItem('sensitivity')||50);
+  document.getElementById('sensitivity').value=sensitivity;
+  document.getElementById('sensText').textContent=sensitivity;
+});
+
+document.getElementById('sensitivity').oninput=e=>{
+  sensitivity=Number(e.target.value);
+  e.target.nextElementSibling;
+  document.getElementById('sensText').textContent=sensitivity;
+  localStorage.setItem('sensitivity',sensitivity);
+};
+
+document.getElementById('save').onclick=()=>{
+  let v=urlEl.value.trim();
+  if(!validUrl(v)){setStatus('http:// 또는 https:// 주소를 입력하세요.');return;}
+  localStorage.setItem('targetUrl',v);
+  setStatus('목적지를 저장했습니다.');
+};
+
+document.getElementById('start').onclick=async()=>{
+  let v=urlEl.value.trim();
+  if(!validUrl(v)){setStatus('먼저 올바른 목적지 URL을 입력하세요.');return;}
+  localStorage.setItem('targetUrl',v);
+
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    audioContext=new (window.AudioContext||window.webkitAudioContext)();
+    analyser=audioContext.createAnalyser();
+    analyser.fftSize=1024;
+    analyser.smoothingTimeConstant=.15;
+    const source=audioContext.createMediaStreamSource(stream);
+    source.connect(analyser);
+
+    samples=new Float32Array(analyser.fftSize);
+    document.getElementById('start').disabled=true;
+    document.getElementById('stop').disabled=false;
+    setStatus('🎤 기침 감지 대기 중');
+
+    timer=setInterval(checkCough,100);
+  }catch(e){
+    setStatus('마이크 권한을 허용할 수 없습니다: '+e.message);
+  }
+};
+
+function checkCough(){
+  if(!analyser)return;
+  analyser.getFloatTimeDomainData(samples);
+
+  let sum=0, peak=0;
+  for(const x of samples){
+    const a=Math.abs(x);
+    sum+=x*x;
+    if(a>peak)peak=a;
+  }
+  const rms=Math.sqrt(sum/samples.length);
+
+  const now=performance.now();
+  const rmsThreshold=0.095-(sensitivity/100)*0.075;
+  const peakThreshold=0.32-(sensitivity/100)*0.22;
+  if(rms>rmsThreshold && peak>peakThreshold){
+    if(now-lastTrigger>COOLDOWN){
+      lastTrigger=now;
+      setStatus('🤧 기침이 감지되었습니다. 이동합니다.');
+      const target=localStorage.getItem('targetUrl');
+      setTimeout(()=>location.href=target,120);
+    }
+  }
+}
+
+document.getElementById('stop').onclick=()=>{
+  clearInterval(timer);
+  timer=null;
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  if(audioContext)audioContext.close();
+  stream=null;
+  audioContext=null;
+  analyser=null;
+  document.getElementById('start').disabled=false;
+  document.getElementById('stop').disabled=true;
+  setStatus('중지됨');
+};
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('service-worker.js').catch(()=>{});
+}
+</script>
+</body>
+</html>
